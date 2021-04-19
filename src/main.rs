@@ -1,7 +1,9 @@
 use core::f32;
-use std::{collections::HashMap, rc::Rc};
+use std::{cmp::Ordering, collections::{HashMap, BinaryHeap}, rc::Rc};
+use image::{ImageBuffer};
 use rand::Rng;
 use colored::*;
+use std::time::Instant;
 
 struct Map {
     width: usize,
@@ -11,11 +13,37 @@ struct Map {
 
 type Position = (u32, u32);
 
+#[derive(Debug, Clone)]
 struct PathNode{
     pos: Position,
     f: f32,
     g: f32,
     parent: Option<Rc<PathNode>>
+}
+
+impl PartialEq for PathNode {
+    fn eq(&self, other: &Self) -> bool {
+        self.pos == other.pos &&
+        self.f == other.f &&
+        self.g == other.g
+    }
+}
+
+impl Eq for PathNode {
+    
+}
+
+impl Ord for PathNode {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other.f.partial_cmp(&self.f).unwrap().then_with(|| self.pos.cmp(&other.pos))
+    }
+}
+
+// `PartialOrd` needs to be implemented as well.
+impl PartialOrd for PathNode {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 fn rand_map(width: usize, height: usize) -> Map{
@@ -36,16 +64,19 @@ fn rand_map(width: usize, height: usize) -> Map{
 }
 
 fn main() {
+    println!("Hello!");
     // Test with random map
-    let map1 = rand_map(10, 10);
+    let map1 = rand_map(1000, 1000);
 
-    println!("{}", visualize_map(&map1));
+    // println!("{}", visualize_map(&map1));
 
-    
-    match a_star((0,0), (9,9), &map1, sl_distance) {
-        Some(path) => println!("{}", visualize_path_on_map(&map1, &path)),
+    let now = Instant::now();
+    match a_star((0,0), (999,999), &map1, sl_distance) {
+        Some(path) => save_path_on_map(&map1, &path),
         _ => println!("{}","No Path Found!".red())
     };
+    println!("Ran A* on map1 in {}ms", now.elapsed().as_millis());
+
     let t = true;
     let f = false;
     // Test with fixed map
@@ -73,6 +104,14 @@ fn main() {
         Some(path) => println!("{}", visualize_path_on_map(&map2, &path)),
         _ => println!("{}","No Path Found!".red())
     };
+
+    // Run performance test
+    let now = Instant::now();
+    let iterations = 10000;
+    for _ in 0..iterations {
+        a_star((0,0), (9,9), &map2, sl_distance);
+    }
+    println!("Ran A* on map2 {} times in {}ms", iterations, now.elapsed().as_millis());
 }
 
 fn visualize_map(map: &Map) -> String {
@@ -119,6 +158,33 @@ fn visualize_path_on_map(map: &Map, path: &Vec<Position>) -> String {
     return output;
 }
 
+fn save_path_on_map(map: &Map, path: &Vec<Position>) {
+    let mut tiles_copy: Vec<u32> = map.tiles.clone().into_iter().map(|v| {
+        match v {
+            true => 1,
+            false => 0
+        }
+    }).collect();
+
+    for p in path {
+        tiles_copy[(p.0 + p.1 * map.width as u32) as usize] = 3;
+    }
+
+    // a default (black) image containing Rgb values
+    let mut img: image::RgbImage = ImageBuffer::new(map.width as u32, map.height as u32);
+    for x in 0..map.width as u32 {
+        for y in 0..map.width as u32 {
+            *img.get_pixel_mut(x, y) = match tiles_copy[x as usize + y as usize * map.height] {
+                0 => image::Rgb([255,255,255]),
+                1 => image::Rgb([0,0,255]),
+                _ => image::Rgb([255,0,0])
+            };
+        }
+    }
+
+    img.save("output.png").unwrap();
+}
+
 
 
 // fn manhattan_distance(a: Position, b: Position) -> f32{
@@ -159,18 +225,24 @@ fn backtrace_path(path: &Vec<Rc<PathNode>>) -> Vec<Position>{
 }
 
 fn a_star(start: Position, end: Position, map: &Map, dist: fn(Position, Position) -> f32) -> Option<Vec<Position>> {
-    let mut open_set: HashMap<Position, PathNode> = HashMap::new();
+    let mut open_set: BinaryHeap<PathNode> = BinaryHeap::new();
+    let mut open_set_contains: HashMap<Position, PathNode> = HashMap::new();
+
     let start_node = PathNode {pos: start, f: 0.0, g:0.0, parent: None };
-    open_set.insert(start, start_node);
+    open_set.push(start_node.clone());
+    open_set_contains.insert(start, start_node);
+
     let mut came_from: Vec<Rc<PathNode>> = vec![];
 
     loop {
         if open_set.len() == 0{
             return None
         }
-
-        let smallest = find_smallest_f(&open_set);
-        let temp_q = open_set.remove(&smallest).expect("This should never happen!");
+        
+        let temp_q = open_set.pop().unwrap();
+        // println!("pos: ({}, {})", temp_q.pos.0, temp_q.pos.1);
+        open_set_contains.remove_entry(&temp_q.pos);
+        
         let q = Rc::from(temp_q);
         
         let mut next_nodes: Vec<PathNode> = vec![];
@@ -197,7 +269,7 @@ fn a_star(start: Position, end: Position, map: &Map, dist: fn(Position, Position
                 
                 let n_pos = (nx,ny);
                 let g = q.g + dist(n_pos, q.pos) as f32;
-                let h = dist(n_pos, end) as f32;
+                let h = dist(n_pos, end) * 2 as f32;
                 next_nodes.push(PathNode {
                     pos: n_pos,
                     f: g+h,
@@ -214,10 +286,11 @@ fn a_star(start: Position, end: Position, map: &Map, dist: fn(Position, Position
             }
 
             // Check if there isn't the same position but with better f
-            match open_set.get(&c.pos) {
+            match open_set_contains.get(&c.pos) {
                 Some(x) => if x.f < c.f {continue;}
                 _ => ()
             };
+
             // Check to see if we have already visited it, but there is a better value
             match (&came_from).into_iter().find(|x| x.pos == c.pos) {
                 Some(x) => {
@@ -226,7 +299,8 @@ fn a_star(start: Position, end: Position, map: &Map, dist: fn(Position, Position
                 _ => ()
             };
 
-            open_set.insert(c.pos, c);
+            open_set_contains.insert(c.pos, c.clone());
+            open_set.push( c);
 
         }
         came_from.push(q.clone());
@@ -244,4 +318,3 @@ fn a_star(start: Position, end: Position, map: &Map, dist: fn(Position, Position
 
     Some(backtrace_path(&came_from))
 }
-
